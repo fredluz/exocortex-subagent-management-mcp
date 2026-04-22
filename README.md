@@ -1,134 +1,187 @@
 # exocortex-subagent-management-mcp
 
-MCP server for multi-agent orchestration via `tmux`.
+**Spawn, orchestrate, and coordinate multiple AI agents in parallel from any MCP client.**
 
-It provides a minimal runtime for spawning subagents, reading state, sending messages, sleeping on wake signals, and cleaning up sessions. It is designed for exocortex-style parent/child agent workflows.
+An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that gives Claude Code, Codex, Gemini, or any MCP-compatible client the ability to launch autonomous AI subagents in tmux sessions — then read their output, send them messages, and manage their lifecycle. No polling, no blocking, no boilerplate.
+
+## The Problem
+
+You want one AI agent to spawn others — a researcher, a coder, a reviewer — working in parallel on different parts of a task. But there's no standard way to do multi-agent orchestration from an MCP client. You end up writing shell scripts, parsing terminal output, and manually wiring up communication between agents.
+
+## The Solution
+
+Install this MCP server. Now any agent can `spawn` subagents, `read` their status, `send` them instructions, and `kill` them when done. Seven tools, zero configuration required.
+
+```bash
+# 1. Install
+npm install -g exocortex-subagent-management-mcp
+
+# 2. Register in ~/.claude.json (or any MCP client config)
+# 3. Your agents can now spawn and manage subagents
+```
 
 ## Quick Start
 
-1. Install globally:
-
-```bash
-npm install -g exocortex-subagent-management-mcp
-```
-
-2. Register in `~/.claude.json`:
+Add to your MCP client configuration (`~/.claude.json` for Claude Code):
 
 ```json
 {
   "mcpServers": {
-    "exocortex-subagent-management-mcp": {
-      "command": "exocortex-subagent-management-mcp",
-      "env": {
-        "EXOCORTEX_HOME": "~/.exocortex",
-        "EXOCORTEX_AGENT_PROFILES_DIR": "~/.exocortex/agent-profiles/built"
-      }
+    "subagent": {
+      "type": "stdio",
+      "command": "exocortex-subagent-management-mcp"
     }
   }
 }
 ```
 
-## Configuration
+That's it. Your agent now has 7 new tools for multi-agent orchestration.
 
-- `EXOCORTEX_HOME`
-  - Root directory for runtime state.
-  - Default: `~/.exocortex`
-  - Uses:
-    - `data/session-store.json`
-    - `data/session-logs/`
-    - `logs/sessions/`
-    - `agents/`
+## Tools
 
-- `EXOCORTEX_AGENT_PROFILES_DIR`
-  - Directory containing built profile JSON files (`<profile>.json`).
-  - Default: `${EXOCORTEX_HOME}/agent-profiles/built`
+### `spawn` — Start an AI agent
 
-## Tools (7)
+Launch an autonomous agent in a tmux session. Supports Claude Code, OpenAI Codex, and Google Gemini CLI.
 
-1. `spawn`
-   - Start an agent in a `tmux` session.
-   - Models: `claude` (default), `codex`, `gemini`.
-   - Example:
 ```json
 {
   "name": "refactor-auth",
-  "prompt": "Refactor auth middleware and add tests",
-  "workdir": "/Users/me/Code/app",
+  "prompt": "Refactor the auth middleware to use JWT. Add tests.",
+  "workdir": "/home/user/my-app",
   "model": "codex",
   "agent": "backend-coder",
-  "reasoningEffort": "medium",
-  "parentSession": "orchestrator-main"
+  "parentSession": "orchestrator"
 }
 ```
 
-2. `read`
-   - Non-blocking output snapshot with signal classification (`WORKING`, `DONE`, `COMPLETE`, etc).
-   - Example:
+### `read` — Non-blocking output snapshot
+
+Check what an agent is doing without blocking. Returns the latest output with automatic signal classification.
+
 ```json
 { "name": "refactor-auth" }
 ```
 
-3. `send`
-   - Send a message to a running session.
-   - Example:
+Returns one of: `[WORKING]`, `[COMPLETE]`, `[DONE]`, `[QUESTION]`, `[NEED_HELP]`, `[TEST_FAILED]`, `[TYPE_ERROR]` — so your orchestrator can react programmatically.
+
+Supports parallel reads across multiple agents:
+
 ```json
-{ "name": "refactor-auth", "text": "Focus on failing test in auth.spec.ts" }
+{ "names": ["agent-1", "agent-2", "agent-3"] }
 ```
 
-4. `kill`
-   - Terminate a session and clean temporary resources.
-   - Example:
+### `send` — Message a running agent
+
+Send instructions, context, or follow-up prompts to a running agent. Automatically wakes agents that are sleeping.
+
+```json
+{ "name": "refactor-auth", "text": "Also update the refresh token logic" }
+```
+
+### `kill` — Terminate a session
+
+Stop an agent and clean up its tmux session.
+
 ```json
 { "name": "refactor-auth" }
 ```
 
-5. `sleep`
-   - Cooperative wait that wakes on signal files or inbox messages.
-   - Example:
+### `sleep` — Cooperative wait
+
+Pause execution while waiting for subagents to finish. Uses **zero LLM tokens** while sleeping — the polling loop runs server-side doing cheap filesystem checks. Wakes automatically when another agent sends a message.
+
 ```json
-{ "duration": 120, "agent": "orchestrator-main" }
+{ "duration": 300, "agent": "orchestrator" }
 ```
 
-6. `list`
-   - List active exocortex `tmux` sessions.
-   - Example:
-```json
-{}
-```
+### `list` — Active sessions
 
-7. `registry`
-   - Return richer runtime metadata for currently running agents.
-   - Example:
-```json
-{}
-```
+List all running agent sessions with their status.
 
-## Agent Profile Injection
+### `registry` — Agent metadata
 
-If `spawn` is called with `agent`, the server loads `<agent>.json` from `EXOCORTEX_AGENT_PROFILES_DIR` and injects that identity/skill content into the launch prompt.
-
-- For `claude` and `codex`, profiles are injected via model-specific instruction-file flags.
-- For `gemini`, profile content is merged directly into the prompt text.
-
-This keeps reusable operating instructions versioned outside each ad-hoc task prompt.
+Rich metadata for all running agents: model, start time, working directory, parent session, and current status.
 
 ## Supported Models
 
-- `claude` (default)
-- `codex`
-- `gemini`
+| Model | CLI | Description |
+|-------|-----|-------------|
+| `claude` (default) | Claude Code | Anthropic's coding agent |
+| `codex` | Codex CLI | OpenAI's coding agent |
+| `gemini` | Gemini CLI | Google's coding agent |
 
-Unknown model values are rejected.
+## Agent Profiles
+
+Give agents persistent identity and skills by passing the `agent` parameter to `spawn`:
+
+```json
+{ "name": "my-task", "agent": "backend-coder", "prompt": "...", "workdir": "..." }
+```
+
+The server loads `backend-coder.json` from the profiles directory and injects the identity, skills, and instructions into the agent's launch prompt. This keeps reusable operating context versioned outside each task prompt.
+
+**Profiles directory**: `$EXOCORTEX_HOME/agent-profiles/built/` (override with `EXOCORTEX_AGENT_PROFILES_DIR`)
+
+## Configuration
+
+Works with zero configuration. All settings are optional:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXOCORTEX_HOME` | `~/.exocortex` | Root directory for runtime state |
+| `EXOCORTEX_AGENT_PROFILES_DIR` | `$EXOCORTEX_HOME/agent-profiles/built` | Agent profile JSON files |
+
+Runtime state is stored under `EXOCORTEX_HOME`:
+- `data/session-store.json` — session metadata with file-based locking
+- `data/session-logs/` — archived session logs
+- `agents/` — per-agent inbox for wake signals
+
+## How It Works
+
+Each spawned agent runs in its own tmux session. The MCP server manages the lifecycle:
+
+1. **Spawn** creates a tmux session, injects the prompt, and starts the chosen CLI (Claude Code, Codex, or Gemini)
+2. **Read** captures the tmux pane output and classifies the agent's state using signal detection
+3. **Send** injects text into the tmux session and wakes sleeping agents via filesystem signals
+4. **Sleep** polls signal files server-side (zero LLM cost) and returns when woken
+5. **Kill** terminates the tmux session and archives the log
+
+Session metadata (model, parent, start time, working directory) is persisted in a JSON store with atomic writes and file-based locking for safe concurrent access.
+
+## Example: Parallel Agent Orchestration
+
+```
+Orchestrator spawns 3 agents:
+  spawn("researcher", "Find all API endpoints that need auth", ...)
+  spawn("test-writer", "Write integration tests for auth middleware", ...)
+  spawn("docs-writer", "Document the authentication flow", ...)
+
+Orchestrator sleeps while they work:
+  sleep(300, "orchestrator")
+
+On wake, checks status:
+  read(names: ["researcher", "test-writer", "docs-writer"])
+  → researcher: [COMPLETE], test-writer: [WORKING], docs-writer: [DONE]
+
+Sends follow-up to the one still working:
+  send("test-writer", "Focus on the refresh token edge case")
+```
+
+## Prerequisites
+
+- **tmux** installed and available in PATH
+- **Node.js** 20+
+- At least one supported AI CLI installed (Claude Code, Codex, or Gemini)
 
 ## Development
 
 ```bash
 bun install
 bun run build
-bun run test
-bun run release-check
+bun run test          # 44 tests
+bun run release-check # full release gate
 ```
 
 ## License
 
-MIT. See `LICENSE`.
+MIT
